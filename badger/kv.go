@@ -441,6 +441,7 @@ func (s *KV) Set(key, val []byte) {
 }
 
 // EntriesSet adds a Set to the list of entries.
+// Exposing this so that user does not have to specify the Entry directly.
 func EntriesSet(s []*Entry, key, val []byte) []*Entry {
 	return append(s, &Entry{
 		Key:   key,
@@ -462,6 +463,8 @@ func (s *KV) CompareAndSet(key []byte, val []byte, casCounter uint16) error {
 }
 
 // Delete deletes a key.
+// Exposing this so that user does not have to specify the Entry directly.
+// For example, BitDelete seems internal to badger.
 func (s *KV) Delete(key []byte) {
 	e := &Entry{
 		Key:  key,
