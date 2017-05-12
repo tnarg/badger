@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/dgraph-io/badger/table"
@@ -381,7 +382,20 @@ func (s *levelsController) compactBuildTables(
 			// Encode the level number as table metadata.
 			var levelNum [2]byte
 			binary.BigEndian.PutUint16(levelNum[:], uint16(l+1))
-			_, err = fd.Write(builder.Finish(levelNum[:]))
+			data := builder.Finish(levelNum[:])
+
+			for i := 0; i < 3; i++ {
+				if _, err = fd.Write(data); err == nil {
+					break
+				}
+				if e, ok := err.(*os.PathError); ok && e.Err == syscall.ENOSPC {
+					fmt.Printf(
+						"Got no space error %+v when writing to %q. Retrying...", e, fd.Name())
+					fd.Truncate(0)
+				} else {
+					break
+				}
+			}
 			y.Checkf(err, "Unable to write to file: %d", fileID)
 
 			newTables[idx], err = table.OpenTable(fd, s.kv.opt.MapTablesTo)
