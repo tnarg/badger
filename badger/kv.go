@@ -171,6 +171,10 @@ func NewKV(opt *Options) *KV {
 			Meta:       e.Meta,
 			CASCounter: e.casCounter,
 		}
+		for !out.hasRoomForWrite() {
+			y.Printf("Replay: Making room for writes")
+			time.Sleep(10 * time.Millisecond)
+		}
 		out.mt.Put(nk, v)
 		return true
 	}
