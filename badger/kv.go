@@ -148,6 +148,9 @@ func NewKV(opt *Options) *KV {
 		vptr.Decode(val)
 	}
 
+	lc = out.closer.Register("writes")
+	go out.doWrites(lc)
+
 	first := true
 	fn := func(e Entry) bool { // Function for replaying.
 		if first {
@@ -179,9 +182,6 @@ func NewKV(opt *Options) *KV {
 		return true
 	}
 	out.vlog.Replay(vptr, fn)
-
-	lc = out.closer.Register("writes")
-	go out.doWrites(lc)
 
 	return out
 }
