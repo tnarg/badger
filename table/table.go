@@ -237,7 +237,6 @@ func (t *Table) readIndex() error {
 	}
 
 	che := make(chan error, len(t.blockIndex))
-	y.Printf("~~~~~~~~len(blockIndex)=%d\n", len(t.blockIndex))
 	for i := 0; i < len(t.blockIndex); i++ {
 
 		bo := &t.blockIndex[i]
