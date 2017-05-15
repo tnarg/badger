@@ -138,6 +138,9 @@ func (f *logFile) iterate(offset int64, fn logEntry) error {
 				return err
 			}
 			decompressed, err = lz4.Decode(decompressed, v[:vl])
+			if err != nil {
+				return err
+			}
 
 			e.Meta = h.meta
 			e.casCounter = h.casCounter
@@ -454,7 +457,7 @@ func (l *valueLog) openOrCreateFiles() {
 	}
 
 	sort.Slice(l.files, func(i, j int) bool {
-		return l.files[i].fid < l.files[i].fid
+		return l.files[i].fid < l.files[j].fid
 	})
 
 	// Open all previous log files as read only. Open the last log file
