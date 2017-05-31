@@ -209,8 +209,12 @@ func (s *levelsController) tryCompact(workerID int) {
 
 // compactBuildTables merge topTables and botTables to form a list of new tables.
 func (s *levelsController) compactBuildTables(
-	l int, topTables, botTables []*table.Table, c *compaction) ([]*table.Table, func()) {
-	// Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
+	l int, cd compactDef, c *compaction) ([]*table.Table, func() error) {
+
+	topTables := cd.top
+	botTables := cd.bot
+
+	// Create iterators across all the tables involved first.
 	var iters []y.Iterator
 	if l == 0 {
 		iters = appendIteratorsReversed(iters, topTables, false)
@@ -219,22 +223,16 @@ func (s *levelsController) compactBuildTables(
 		iters = []y.Iterator{topTables[0].NewIterator(false)}
 	}
 
-	// Load to RAM for tables to be deleted.
-	//	for _, tbl := range topTables {
-	//		tbl.LoadToRAM()
-	//	}
-	//	for _, tbl := range botTables {
-	//		tbl.LoadToRAM()
-	//	}
-
+	// Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
 	iters = append(iters, table.NewConcatIterator(botTables, false))
 	it := y.NewMergeIterator(iters, false)
 	defer it.Close() // Important to close the iterator to do ref counting.
 
 	it.Rewind()
 
+	// Start generating new tables.
 	newTables := make([]*table.Table, len(c.toInsert))
-	var wg sync.WaitGroup
+	che := make(chan error, len(c.toInsert))
 	var i int
 	newIDMin, newIDMax := c.toInsert[0], c.toInsert[len(c.toInsert)-1]
 	newID := newIDMin
@@ -254,39 +252,152 @@ func (s *levelsController) compactBuildTables(
 		}
 		y.Printf("LOG Compact. Iteration to generate one table took: %v\n", time.Since(timeStart))
 
-		wg.Add(1)
 		y.AssertTruef(newID <= newIDMax, "%d %d", newID, newIDMax)
 		go func(idx int, fileID uint64, builder *table.TableBuilder) {
 			defer builder.Close()
-			defer wg.Done()
+
 			fd, err := y.OpenSyncedFile(table.NewFilename(fileID, s.kv.opt.Dir), true)
-			y.Check(err)
+			if err != nil {
+				che <- errors.Wrapf(err, "While opening new table: %d", fileID)
+				return
+			}
 
 			// Encode the level number as table metadata.
 			var levelNum [2]byte
 			binary.BigEndian.PutUint16(levelNum[:], uint16(l+1))
 			_, err = fd.Write(builder.Finish(levelNum[:]))
-			y.Checkf(err, "Unable to write to file: %d", fileID)
+			if err != nil {
+				che <- errors.Wrapf(err, "Unable to write to file: %d", fileID)
+				return
+			}
 
 			newTables[idx], err = table.OpenTable(fd, s.kv.opt.MapTablesTo)
 			// decrRef is added below.
-			y.Check(err)
+			che <- errors.Wrapf(err, "Unable to open table: %q", fd.Name())
+
 		}(i, newID, builder)
 		newID++
 	}
-	wg.Wait()
+
+	// Wait for all table builders to finish.
+	for x := 0; x < i; x++ {
+		if err := <-che; err != nil {
+			return nil, func() error { return errors.Wrapf(err, "While running compaction for: %+v", c) }
+		}
+	}
 
 	out := newTables[:i]
-	return out, func() {
+	return out, func() error {
 		for _, t := range out {
-			t.DecrRef() // replaceTables will increment reference.
+			// replaceTables will increment reference.
+			if err := t.DecrRef(); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
 }
 
 type compactDef struct {
+	thisLevel *levelHandler
+	nextLevel *levelHandler
+
 	top []*table.Table
 	bot []*table.Table
+}
+
+func (cd *compactDef) fillTablesL0() {
+	cd.thisLevel.RLock() // For accessing tables. We may be adding new table into level 0.
+	cd.top = make([]*table.Table, len(cd.thisLevel.tables))
+	copy(cd.top, cd.thisLevel.tables)
+	cd.thisLevel.RUnlock()
+
+	smallest, biggest := keyRange(cd.top)
+
+	cd.nextLevel.RLock()
+	left, right := cd.nextLevel.overlappingTables(smallest, biggest)
+	cd.bot = make([]*table.Table, right-left)
+	copy(cd.bot, cd.nextLevel.tables[left:right])
+	cd.nextLevel.RUnlock()
+}
+
+func (cd *compactDef) fillTables() {
+	// TODO: Implement this.
+}
+
+func (s *levelsController) runCompactDef(l int, cd compactDef) {
+	timeStart := time.Now()
+	var readSize int64
+	for _, tbl := range cd.top {
+		readSize += tbl.Size()
+	}
+	for _, tbl := range cd.bot {
+		readSize += tbl.Size()
+	}
+
+	thisLevel := cd.thisLevel
+	nextLevel := cd.nextLevel
+
+	if thisLevel.level >= 1 && len(cd.bot) == 0 {
+		y.AssertTrue(len(cd.top) == 1)
+
+		nextLevel.replaceTables(cd.top)
+		thisLevel.deleteTables(cd.top)
+
+		tbl := cd.top[0]
+		tbl.UpdateLevel(l + 1)
+		y.Printf("LOG Compact-Move %d->%d smallest:%s biggest:%s took %v\n",
+			l, l+1, string(tbl.Smallest()), string(tbl.Biggest()), time.Since(timeStart))
+		return
+	}
+
+	c := s.buildCompactionLogEntry(&cd)
+	//			if s.kv.opt.Verbose {
+	//				y.Printf("Compact start: %v\n", c)
+	//			}
+	s.clog.add(c)
+	newTables, decr := s.compactBuildTables(l, cd, c)
+	if newTables == nil {
+		err := decr()
+		// This compaction couldn't be done successfully.
+		y.Printf("LOG Compact FAILED with error: %+v: %+v %+v", err, cd, c)
+		return
+	}
+	defer decr()
+
+	nextLevel.replaceTables(newTables)
+	thisLevel.deleteTables(cd.top) // Function will acquire level lock.
+
+	// Note: For level 0, while doCompact is running, it is possible that new tables are added.
+	// However, the tables are added only to the end, so it is ok to just delete the first table.
+
+	// Write to compact log.
+	c.done = 1
+	s.clog.add(c)
+
+	y.Printf("LOG Compact %d->%d, del %d tables, add %d tables, took %v\n",
+		l, l+1, len(cd.top)+len(cd.bot), len(newTables), time.Since(timeStart))
+}
+
+func tablesToCompactL0(thisLevel, nextLevel *levelHandler) (cds []compactDef) {
+	thisLevel.RLock() // For accessing tables. We may be adding new table into level 0.
+	top := make([]*table.Table, len(thisLevel.tables))
+	copy(top, thisLevel.tables)
+	thisLevel.RUnlock()
+
+	smallest, biggest := keyRange(top)
+
+	nextLevel.RLock()
+	left, right := nextLevel.overlappingTables(smallest, biggest)
+	bot := make([]*table.Table, right-left)
+	copy(bot, nextLevel.tables[left:right])
+	nextLevel.RUnlock()
+
+	cds = append(cds, compactDef{
+		top: top,
+		bot: bot,
+	})
+	return cds
 }
 
 // doCompact picks some table on level l and compacts it away to the next level.
@@ -300,21 +411,12 @@ func (s *levelsController) doCompact(l int) error {
 	// remain unchanged.
 	var cds []compactDef
 	if l == 0 {
-		thisLevel.RLock() // For accessing tables. We may be adding new table into level 0.
-		top := make([]*table.Table, len(thisLevel.tables))
-		y.AssertTrue(len(thisLevel.tables) == copy(top, thisLevel.tables))
-		thisLevel.RUnlock()
-
-		smallest, biggest := keyRange(top)
-		//		nextLevel.RLock() // Shouldn't be necessary.
-		left, right := nextLevel.overlappingTables(smallest, biggest)
-		//		nextLevel.RUnlock()
-		bot := make([]*table.Table, right-left)
-		copy(bot, nextLevel.tables[left:right])
-		cds = append(cds, compactDef{
-			top: top,
-			bot: bot,
-		})
+		cd := compactDef{
+			thisLevel: s.levels[l],
+			nextLevel: s.levels[l+1],
+		}
+		cd.fillTablesL0()
+		cds = append(cds, cd)
 	} else {
 		// Sort tables by size, descending.
 		// TODO: This does not seem to speed up much. Consider ordering by
@@ -359,45 +461,7 @@ func (s *levelsController) doCompact(l int) error {
 		wg.Add(1)
 		go func(cd compactDef) {
 			defer wg.Done()
-			timeStart := time.Now()
-			var readSize int64
-			for _, tbl := range cd.top {
-				readSize += tbl.Size()
-			}
-			for _, tbl := range cd.bot {
-				readSize += tbl.Size()
-			}
-
-			if thisLevel.level >= 1 && len(cd.bot) == 0 {
-				y.AssertTrue(len(cd.top) == 1)
-				tbl := cd.top[0]
-				nextLevel.replaceTables(cd.top)
-				thisLevel.deleteTables(cd.top)
-				updateLevel(tbl, l+1)
-				y.Printf("LOG Compact-Move %d->%d smallest:%s biggest:%s took %v\n",
-					l, l+1, string(tbl.Smallest()), string(tbl.Biggest()), time.Since(timeStart))
-				return
-			}
-
-			c := s.buildCompaction(&cd)
-			//			if s.kv.opt.Verbose {
-			//				y.Printf("Compact start: %v\n", c)
-			//			}
-			s.clog.add(c)
-			newTables, decr := s.compactBuildTables(l, cd.top, cd.bot, c)
-			defer decr()
-
-			nextLevel.replaceTables(newTables)
-			thisLevel.deleteTables(cd.top) // Function will acquire level lock.
-			// Note: For level 0, while doCompact is running, it is possible that new tables are added.
-			// However, the tables are added only to the end, so it is ok to just delete the first table.
-
-			// Write to compact log.
-			c.done = 1
-			s.clog.add(c)
-
-			y.Printf("LOG Compact %d->%d, del %d tables, add %d tables, took %v\n",
-				l, l+1, len(cd.top)+len(cd.bot), len(newTables), time.Since(timeStart))
+			s.runCompactDef(l, cd)
 		}(cd)
 	}
 	wg.Wait()

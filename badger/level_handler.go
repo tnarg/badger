@@ -19,7 +19,6 @@ package badger
 import (
 	"bytes"
 	"sort"
-	"sync"
 
 	"github.com/dgraph-io/badger/table"
 	"github.com/dgraph-io/badger/y"
@@ -28,7 +27,7 @@ import (
 
 type levelHandler struct {
 	// Guards tables, totalSize.
-	sync.RWMutex
+	y.SafeMutex
 
 	// For level >= 1, tables are sorted by key ranges, which do not overlap.
 	// For level 0, tables are sorted by time.
@@ -276,6 +275,8 @@ func (s *levelHandler) appendIterators(iters []y.Iterator, reversed bool) []y.It
 // Returns a half-interval.
 // This function should already have acquired a read lock.
 func (s *levelHandler) overlappingTables(begin, end []byte) (int, int) {
+	s.AssertRLock()
+
 	left := sort.Search(len(s.tables), func(i int) bool {
 		return bytes.Compare(begin, s.tables[i].Biggest()) <= 0
 	})
