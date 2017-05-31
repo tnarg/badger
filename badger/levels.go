@@ -202,7 +202,6 @@ func (s *levelsController) tryCompact(workerID int) {
 	if l < 0 {
 		return
 	}
-	fmt.Printf("Chosen compact level: %d\n", l)
 	y.Check(s.doCompact(l)) // May relax check later.
 	s.Lock()
 	defer s.Unlock()
@@ -334,7 +333,6 @@ func (cd *compactDef) fillTablesL0() error {
 	smallest, biggest := keyRange(cd.top)
 
 	left, right := cd.nextLevel.overlappingTables(smallest, biggest)
-	fmt.Printf("left, right: %d %d\n", left, right)
 	cd.bot = make([]*table.Table, right-left)
 	copy(cd.bot, cd.nextLevel.tables[left:right])
 	return nil
@@ -366,7 +364,6 @@ func (cd *compactDef) fillTables() error {
 }
 
 func (s *levelsController) runCompactDef(l int, cd compactDef) {
-	fmt.Printf("Compact def: %+v\n", cd)
 	timeStart := time.Now()
 	var readSize int64
 	for _, tbl := range cd.top {
@@ -398,7 +395,6 @@ func (s *levelsController) runCompactDef(l int, cd compactDef) {
 	//			}
 	s.clog.add(c)
 	newTables, decr := s.compactBuildTables(l, cd, c)
-	fmt.Printf("new tables: %+v\n", newTables)
 	if newTables == nil {
 		err := decr()
 		// This compaction couldn't be done successfully.
