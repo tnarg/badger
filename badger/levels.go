@@ -164,6 +164,8 @@ func (s *levelsController) runWorker(workerID int) {
 }
 
 // pickCompactLevel determines which level to compact. Return -1 if not found.
+// TODO: Implement this here
+// https://github.com/facebook/rocksdb/wiki/Leveled-Compaction
 func (s *levelsController) pickCompactLevel() int {
 	s.Lock() // For access to beingCompacted.
 	defer s.Unlock()
@@ -200,6 +202,7 @@ func (s *levelsController) tryCompact(workerID int) {
 	if l < 0 {
 		return
 	}
+	fmt.Printf("Chosen compact level: %d\n", l)
 	y.Check(s.doCompact(l)) // May relax check later.
 	s.Lock()
 	defer s.Unlock()
@@ -306,26 +309,64 @@ type compactDef struct {
 	bot []*table.Table
 }
 
-func (cd *compactDef) fillTablesL0() {
-	cd.thisLevel.RLock() // For accessing tables. We may be adding new table into level 0.
+func (cd *compactDef) RLock() {
+	cd.thisLevel.RLock()
+	cd.nextLevel.RLock()
+}
+
+func (cd *compactDef) RUnlock() {
+	cd.nextLevel.RUnlock()
+	cd.thisLevel.RUnlock()
+}
+
+var errNoTableFound = errors.New("No table found")
+
+func (cd *compactDef) fillTablesL0() error {
+	cd.thisLevel.AssertRLock()
+	cd.nextLevel.AssertRLock()
+
 	cd.top = make([]*table.Table, len(cd.thisLevel.tables))
 	copy(cd.top, cd.thisLevel.tables)
-	cd.thisLevel.RUnlock()
+	if len(cd.top) == 0 {
+		return errNoTableFound
+	}
 
 	smallest, biggest := keyRange(cd.top)
 
-	cd.nextLevel.RLock()
 	left, right := cd.nextLevel.overlappingTables(smallest, biggest)
+	fmt.Printf("left, right: %d %d\n", left, right)
 	cd.bot = make([]*table.Table, right-left)
 	copy(cd.bot, cd.nextLevel.tables[left:right])
-	cd.nextLevel.RUnlock()
+	return nil
 }
 
-func (cd *compactDef) fillTables() {
-	// TODO: Implement this.
+func (cd *compactDef) fillTables() error {
+	cd.thisLevel.AssertRLock()
+	cd.nextLevel.AssertRLock()
+
+	tbls := make([]*table.Table, len(cd.thisLevel.tables))
+	copy(tbls, cd.thisLevel.tables)
+	if len(tbls) == 0 {
+		return errNoTableFound
+	}
+
+	// Find the biggest table, and compact that first.
+	// TODO: Try other table picking strategies.
+	sort.Slice(tbls, func(i, j int) bool {
+		return tbls[i].Size() > tbls[j].Size()
+	})
+
+	t := tbls[0]
+	cd.top = []*table.Table{t}
+
+	left, right := cd.nextLevel.overlappingTables(t.Smallest(), t.Biggest())
+	cd.bot = make([]*table.Table, right-left)
+	copy(cd.bot, cd.nextLevel.tables[left:right])
+	return nil
 }
 
 func (s *levelsController) runCompactDef(l int, cd compactDef) {
+	fmt.Printf("Compact def: %+v\n", cd)
 	timeStart := time.Now()
 	var readSize int64
 	for _, tbl := range cd.top {
@@ -357,6 +398,7 @@ func (s *levelsController) runCompactDef(l int, cd compactDef) {
 	//			}
 	s.clog.add(c)
 	newTables, decr := s.compactBuildTables(l, cd, c)
+	fmt.Printf("new tables: %+v\n", newTables)
 	if newTables == nil {
 		err := decr()
 		// This compaction couldn't be done successfully.
@@ -379,92 +421,32 @@ func (s *levelsController) runCompactDef(l int, cd compactDef) {
 		l, l+1, len(cd.top)+len(cd.bot), len(newTables), time.Since(timeStart))
 }
 
-func tablesToCompactL0(thisLevel, nextLevel *levelHandler) (cds []compactDef) {
-	thisLevel.RLock() // For accessing tables. We may be adding new table into level 0.
-	top := make([]*table.Table, len(thisLevel.tables))
-	copy(top, thisLevel.tables)
-	thisLevel.RUnlock()
-
-	smallest, biggest := keyRange(top)
-
-	nextLevel.RLock()
-	left, right := nextLevel.overlappingTables(smallest, biggest)
-	bot := make([]*table.Table, right-left)
-	copy(bot, nextLevel.tables[left:right])
-	nextLevel.RUnlock()
-
-	cds = append(cds, compactDef{
-		top: top,
-		bot: bot,
-	})
-	return cds
-}
-
 // doCompact picks some table on level l and compacts it away to the next level.
 func (s *levelsController) doCompact(l int) error {
 	y.AssertTrue(l+1 < s.kv.opt.MaxLevels) // Sanity check.
-	thisLevel := s.levels[l]
-	nextLevel := s.levels[l+1]
 
-	//	srcIdx0, srcIdx1 := thisLevel.pickCompactTables()
+	cd := compactDef{
+		thisLevel: s.levels[l],
+		nextLevel: s.levels[l+1],
+	}
+
 	// While picking tables to be compacted, both levels' tables are expected to
 	// remain unchanged.
-	var cds []compactDef
+	cd.RLock()
 	if l == 0 {
-		cd := compactDef{
-			thisLevel: s.levels[l],
-			nextLevel: s.levels[l+1],
+		if err := cd.fillTablesL0(); err != nil {
+			cd.RUnlock()
+			return err
 		}
-		cd.fillTablesL0()
-		cds = append(cds, cd)
 	} else {
-		// Sort tables by size, descending.
-		// TODO: This does not seem to speed up much. Consider ordering by
-		// tables that require the least amount of work, i.e., min overlap with
-		// the next level.
-		tbls := make([]*table.Table, len(thisLevel.tables))
-		copy(tbls, thisLevel.tables)
-		sort.Slice(tbls, func(i, j int) bool {
-			return tbls[i].Size() > tbls[j].Size()
-		})
-		type intPair struct {
-			left, right int
-		}
-		var ranges []intPair
-		for _, t := range tbls {
-			left, right := nextLevel.overlappingTables(t.Smallest(), t.Biggest())
-			var hasOverlap bool
-			for _, r := range ranges {
-				if !(left >= r.right || right <= r.left) {
-					hasOverlap = true
-					break
-				}
-			}
-			if !hasOverlap {
-				bot := make([]*table.Table, right-left)
-				copy(bot, nextLevel.tables[left:right])
-				cds = append(cds, compactDef{
-					top: []*table.Table{t},
-					bot: bot,
-				})
-				ranges = append(ranges, intPair{left, right})
-				// TODO: Number of tables to be compacted together. We have tried different values.
-				if len(cds) >= 2 {
-					break
-				}
-			}
+		if err := cd.fillTables(); err != nil {
+			cd.RUnlock()
+			return err
 		}
 	}
+	cd.RUnlock()
 
-	var wg sync.WaitGroup
-	for _, cd := range cds {
-		wg.Add(1)
-		go func(cd compactDef) {
-			defer wg.Done()
-			s.runCompactDef(l, cd)
-		}(cd)
-	}
-	wg.Wait()
+	s.runCompactDef(l, cd)
 	//	s.validate()
 	return nil
 }

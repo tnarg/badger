@@ -102,7 +102,9 @@ func (s *levelHandler) replaceTables(newTables []*table.Table) {
 
 	// Need to re-search the range of tables in this level to be replaced as
 	// other goroutines might be changing it as well.
-	y.AssertTrue(len(newTables) > 0)
+	if len(newTables) == 0 {
+		return
+	}
 
 	// Increase totalSize first.
 	for _, tbl := range newTables {
