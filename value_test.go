@@ -182,9 +182,12 @@ func TestValueGC(t *testing.T) {
 		if err := kv.Get(key, &item); err != nil {
 			t.Error(err)
 		}
+		item.ValueLength()
 		val := item.Value()
 		require.NotNil(t, val)
 		require.True(t, len(val) == sz, "Size found: %d", len(val))
+		require.True(t, item.ValueLength() == uint32(sz),
+			"Size found: %d %v", item.ValueLength(), sz)
 	}
 }
 

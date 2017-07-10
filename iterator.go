@@ -18,6 +18,8 @@ package badger
 
 import (
 	"bytes"
+	"encoding/binary"
+	"fmt"
 	"sync"
 
 	"github.com/dgraph-io/badger/y"
@@ -47,6 +49,19 @@ func (item *KVItem) Key() []byte {
 func (item *KVItem) Value() []byte {
 	item.wg.Wait()
 	return item.val
+}
+
+// ValueLength returns the length of the value stored in value log
+func (item *KVItem) ValueLength() uint32 {
+	fmt.Printf("item value %+v\n", item.vptr)
+	if (item.meta & BitDelete) != 0 {
+		// Tombstone encountered.
+		return 0
+	}
+	if (item.meta & BitValuePointer) != 0 {
+		return uint32(len(item.vptr))
+	}
+	return binary.BigEndian.Uint32(item.vptr[4:8])
 }
 
 // Counter returns the CAS counter associated with the value.
@@ -168,6 +183,7 @@ func (it *Iterator) fill(item *KVItem) {
 	item.casCounter = vs.CASCounter
 	item.key = y.Safecopy(item.key, it.iitr.Key())
 	item.vptr = y.Safecopy(item.vptr, vs.Value)
+
 	if it.opt.FetchValues {
 		item.wg.Add(1)
 		go func() {
