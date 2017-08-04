@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"hash/crc64"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -115,7 +116,7 @@ func (f *logFile) iterate(offset uint32, fn logEntry) error {
 		return y.Wrap(err)
 	}
 
-	read := func(r *bufio.Reader, buf []byte) error {
+	read := func(r io.Reader, buf []byte) error {
 		for {
 			n, err := r.Read(buf)
 			if err != nil {
@@ -141,20 +142,23 @@ func (f *logFile) iterate(offset uint32, fn logEntry) error {
 	var hlen int
 	recordOffset := offset
 	for {
-		if err = read(reader, hbuf[:]); err == io.EOF {
+
+		hash := crc64.New(crc64.MakeTable(crc64.ISO))
+		tee := io.TeeReader(reader, hash)
+
+		if err = read(tee, hbuf[:]); err == io.EOF {
 			break
 		}
 
 		e.offset = recordOffset
 		_, hlen = h.Decode(hbuf[:])
-		// fmt.Printf("[%d] Header read: %+v\n", count, h)
 		vl := int(h.vlen)
 		if cap(v) < vl {
 			v = make([]byte, 2*vl)
 		}
 
 		if h.meta&BitCompressed > 0 { // entry is compressed
-			if err = read(reader, v[:vl]); err != nil {
+			if err = read(tee, v[:vl]); err != nil {
 				return err
 			}
 			decompressed, err = lz4.Decode(decompressed, v[:vl])
@@ -170,7 +174,7 @@ func (f *logFile) iterate(offset uint32, fn logEntry) error {
 			e.Value = decompressed[h.klen:]
 
 			recordOffset += uint32(hlen + vl)
-			vp.Len = uint32(len(hbuf)) + h.vlen // h.vlen is sufficient, because key is
+			vp.Len = uint32(len(hbuf)) + h.vlen + 8 // h.vlen is sufficient, because key is
 			// compressed inside the block
 		} else {
 			kl := int(h.klen)
@@ -180,20 +184,26 @@ func (f *logFile) iterate(offset uint32, fn logEntry) error {
 			e.Key = k[:kl]
 			e.Value = v[:vl]
 
-			if err = read(reader, e.Key); err != nil {
+			if err = read(tee, e.Key); err != nil {
 				return err
 			}
 			e.Meta = h.meta
 			e.UserMeta = h.userMeta
 			e.casCounter = h.casCounter
 			e.CASCounterCheck = h.casCounterCheck
-			if err = read(reader, e.Value); err != nil {
+			if err = read(tee, e.Value); err != nil {
 				return err
 			}
 
 			recordOffset += uint32(hlen + kl + vl)
-			vp.Len = uint32(len(hbuf)) + h.klen + h.vlen
+			vp.Len = uint32(len(hbuf)) + h.klen + h.vlen + 8
 		}
+
+		var crcBuf [8]byte
+		if err := read(reader, crcBuf[:]); err == nil {
+			return err // TODO: should use wrap?
+		}
+		// TODO: Check crcBuf against hash.Sum64().
 
 		vp.Offset = e.offset
 		vp.Fid = f.fid
@@ -366,9 +376,12 @@ func (enc *entryEncoder) Encode(e *Entry, buf *bytes.Buffer) (int, error) {
 			h.casCounterCheck = e.CASCounterCheck
 			h.Encode(headerEnc[:])
 
-			buf.Write(headerEnc[:])
-			buf.Write(enc.compressed)
-			return len(headerEnc) + len(enc.compressed), nil
+			hash := crc64.New(crc64.MakeTable(crc64.ISO))
+			combined := io.MultiWriter(buf, hash)
+			combined.Write(headerEnc[:])
+			combined.Write(enc.compressed)
+			binary.Write(buf, binary.BigEndian, hash.Sum64())
+			return len(headerEnc) + len(enc.compressed) + 8, nil
 		}
 	}
 
@@ -380,10 +393,14 @@ func (enc *entryEncoder) Encode(e *Entry, buf *bytes.Buffer) (int, error) {
 	h.casCounterCheck = e.CASCounterCheck
 	h.Encode(headerEnc[:])
 
-	buf.Write(headerEnc[:])
-	buf.Write(e.Key)
-	buf.Write(e.Value)
-	return len(headerEnc) + len(e.Key) + len(e.Value), nil
+	// TODO: Reuse the table between calls if possible.
+	hash := crc64.New(crc64.MakeTable(crc64.ISO))
+	combined := io.MultiWriter(buf, hash)
+	combined.Write(headerEnc[:])
+	combined.Write(e.Key)
+	combined.Write(e.Value)
+	binary.Write(buf, binary.BigEndian, hash.Sum64())
+	return len(headerEnc) + len(e.Key) + len(e.Value) + 8, nil
 }
 
 func (e Entry) print(prefix string) {
@@ -752,7 +769,7 @@ func (l *valueLog) Read(p valuePointer, s *y.Slice) (e Entry, err error) {
 	buf, _ = h.Decode(buf)
 	if h.meta&BitCompressed > 0 {
 		// TODO: reuse generated buffer
-		y.AssertTrue(uint32(len(buf)) == h.vlen)
+		y.AssertTrue(uint32(len(buf)) == h.vlen+8)
 		decoded, err := lz4.Decode(nil, buf)
 		y.Check(err)
 
@@ -766,6 +783,7 @@ func (l *valueLog) Read(p valuePointer, s *y.Slice) (e Entry, err error) {
 	e.casCounter = h.casCounter
 	e.CASCounterCheck = h.casCounterCheck
 	e.Value = buf[h.klen : h.klen+h.vlen]
+	// TODO: Do checksum.
 	return e, nil
 }
 

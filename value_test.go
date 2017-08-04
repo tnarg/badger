@@ -120,7 +120,7 @@ func TestCompression(t *testing.T) {
 
 	log.write([]*request{b})
 	require.Len(t, b.Ptrs, 3)
-	fmt.Printf("Pointer written: %+v %+v %+v", b.Ptrs[0], b.Ptrs[1], b.Ptrs[2])
+	fmt.Printf("Pointer written: %+v %+v %+v\n", b.Ptrs[0], b.Ptrs[1], b.Ptrs[2])
 
 	e, err := log.Read(b.Ptrs[0], nil)
 	e2, err := log.Read(b.Ptrs[1], nil)
