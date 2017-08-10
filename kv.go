@@ -36,6 +36,7 @@ import (
 var (
 	badgerPrefix = []byte("!badger!")     // Prefix for internal keys used by badger.
 	head         = []byte("!badger!head") // For storing value offset for replay.
+	KeyNotFound  = errors.New("Key not found")
 )
 
 // Options are params for creating DB object.
@@ -454,10 +455,12 @@ func (s *KV) getMemTables() ([]*skl.Skiplist, func()) {
 }
 
 func (s *KV) fillItem(item *KVItem) error {
+	if item.vptr == nil && item.meta == 0 {
+		return KeyNotFound
+	}
 	if (item.meta & BitDelete) != 0 {
 		// Tombstone encountered.
-		item.val = nil
-		return nil
+		return KeyNotFound
 	}
 
 	if item.slice == nil {
@@ -476,8 +479,7 @@ func (s *KV) fillItem(item *KVItem) error {
 		return errors.Wrapf(err, "Unable to read from value log: %+v", vp)
 	}
 	if (entry.Meta & BitDelete) != 0 { // Is a tombstone.
-		item.val = nil
-		return nil
+		return KeyNotFound
 	}
 	item.val = entry.Value
 	return nil
