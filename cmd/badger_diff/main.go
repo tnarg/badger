@@ -77,7 +77,7 @@ func StartBadger(dir string) *badger.KV {
 
 func valueMismatch(itemA, itemB *badger.KVItem) {
 	fmt.Printf(`
-Keys have different values:
+Equal keys have different values:
 K:
 %vV(A) %d:
 %vV(B) %d:
