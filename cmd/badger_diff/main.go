@@ -83,9 +83,9 @@ K:
 %vV(B) %d:
 %v`,
 		hex.Dump(itemA.Key()),
-		itemA.UserMeta,
+		itemA.UserMeta(),
 		hex.Dump(itemA.Value()),
-		itemB.UserMeta,
+		itemB.UserMeta(),
 		hex.Dump(itemB.Value()))
 }
 
