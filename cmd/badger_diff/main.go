@@ -76,17 +76,12 @@ func StartBadger(dir string) *badger.KV {
 }
 
 func valueMismatch(itemA, itemB *badger.KVItem) {
-	fmt.Println(`
+	fmt.Printf(`
 Keys have different values:
 K:
-%v
-
-V(A) %d:
-%v
-
-V(B) %d:
-%v
-`,
+%vV(A) %d:
+%vV(B) %d:
+%v`,
 		hex.Dump(itemA.Key()),
 		itemA.UserMeta,
 		hex.Dump(itemA.Value()),
@@ -95,14 +90,11 @@ V(B) %d:
 }
 
 func keyMismatch(label string, item *badger.KVItem) {
-	fmt.Println(`
+	fmt.Printf(`
 Key present in one KV store but not the other:
 K(%s):
-%v
-
-V(%s) %d:
-%v
-`,
+%vV(%s) %d:
+%v`,
 		label,
 		hex.Dump(item.Key()),
 		label,
