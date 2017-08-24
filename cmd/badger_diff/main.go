@@ -9,6 +9,7 @@ import (
 
 	"github.com/dgraph-io/badger"
 	"github.com/dgraph-io/badger/y"
+	"github.com/dgraph-io/dgraph/protos"
 )
 
 func main() {
@@ -80,13 +81,18 @@ func valueMismatch(itemA, itemB *badger.KVItem) {
 Equal keys have different values:
 K:
 %vV(A) %d:
-%vV(B) %d:
-%v`,
+%v%v
+V(B) %d:
+%v%v
+`,
 		hex.Dump(itemA.Key()),
 		itemA.UserMeta(),
 		hex.Dump(itemA.Value()),
+		niceValue(itemA.Value()),
 		itemB.UserMeta(),
-		hex.Dump(itemB.Value()))
+		hex.Dump(itemB.Value()),
+		niceValue(itemB.Value()),
+	)
 }
 
 func keyMismatch(label string, item *badger.KVItem) {
@@ -94,10 +100,24 @@ func keyMismatch(label string, item *badger.KVItem) {
 Key present in one KV store but not the other:
 K(%s):
 %vV(%s) %d:
-%v`,
+%v%v
+`,
 		label,
 		hex.Dump(item.Key()),
 		label,
 		item.UserMeta(),
-		hex.Dump(item.Value()))
+		hex.Dump(item.Value()),
+		niceValue(item.Value()),
+	)
+}
+
+func niceValue(v []byte) string {
+
+	var pl protos.PostingList
+	err := pl.Unmarshal(v)
+	if err == nil {
+		return fmt.Sprintf("Pretty: %+v", pl)
+	}
+
+	return "Pretty: unknown conversion"
 }
