@@ -12,6 +12,9 @@ import (
 	"github.com/dgraph-io/dgraph/protos"
 )
 
+// TODO: This project should really be in the dgraph repo, since it contains
+// intimate knowledge of the value types in dgraph. E.g. posting lists.
+
 func main() {
 
 	badgerA := flag.String("a", "", "directory for badger A")
