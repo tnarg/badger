@@ -32,6 +32,9 @@ func main() {
 
 	exit := 0
 
+	countA := 0
+	countB := 0
+
 	for itA.Valid() && itB.Valid() {
 		itemA := itA.Item()
 		itemB := itB.Item()
@@ -45,14 +48,18 @@ func main() {
 			}
 			itA.Next()
 			itB.Next()
+			countA++
+			countB++
 		} else if keyCmp < 0 {
 			keyMismatch("A", itemA)
 			exit = 1
 			itA.Next()
+			countA++
 		} else {
 			keyMismatch("B", itemB)
 			exit = 1
 			itB.Next()
+			countB++
 		}
 
 	}
@@ -60,12 +67,18 @@ func main() {
 		exit = 1
 		keyMismatch("A", itA.Item())
 		itA.Next()
+		countA++
 	}
 	for itB.Valid() {
 		exit = 1
 		keyMismatch("B", itB.Item())
 		itB.Next()
+		countB++
 	}
+
+	fmt.Println("\nSummary:")
+	fmt.Printf("Num keys(A): %d\n", countA)
+	fmt.Printf("Num keys(B): %d\n", countB)
 
 	os.Exit(exit)
 }
@@ -84,10 +97,8 @@ func valueMismatch(itemA, itemB *badger.KVItem) {
 Equal keys have different values:
 K:
 %vV(A) %d:
-%v%v
-V(B) %d:
-%v%v
-`,
+%v%vV(B) %d:
+%v%v`,
 		hex.Dump(itemA.Key()),
 		itemA.UserMeta(),
 		hex.Dump(itemA.Value()),
@@ -103,8 +114,7 @@ func keyMismatch(label string, item *badger.KVItem) {
 Key present in one KV store but not the other:
 K(%s):
 %vV(%s) %d:
-%v%v
-`,
+%v%v`,
 		label,
 		hex.Dump(item.Key()),
 		label,
@@ -116,11 +126,22 @@ K(%s):
 
 func niceValue(v []byte) string {
 
+	var result string
+
 	var pl protos.PostingList
 	err := pl.Unmarshal(v)
 	if err == nil {
-		return fmt.Sprintf("Pretty: %+v", pl)
+		result += fmt.Sprintf("Pretty: %+v\n", pl)
 	}
 
-	return "Pretty: unknown conversion"
+	var su protos.SchemaUpdate
+	err = su.Unmarshal(v)
+	if err == nil {
+		result += fmt.Sprintf("Pretty: %+v\n", su)
+	}
+
+	if result == "" {
+		return "Pretty: unknown conversion"
+	}
+	return result
 }
