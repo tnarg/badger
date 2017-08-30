@@ -117,10 +117,11 @@ func (lf *logFile) read(buf []byte, offset int64) error {
 			return y.ErrEOF
 		}
 
-		nbr = copy(buf, lf.mmap[offset:])
-		if nbr < len(buf) {
-			err = errTooFewBytes
-		}
+		buf = lf.mmap[offset : offset+int64(len(buf))]
+		//nbr = copy(buf, lf.mmap[offset:])
+		//if nbr < len(buf) {
+		//	err = errTooFewBytes
+		//}
 	} else {
 		nbr, err = lf.fd.ReadAt(buf, offset)
 	}
@@ -767,24 +768,24 @@ func (vlog *valueLog) Read(p valuePointer, s *y.Slice) (e Entry, err error) {
 	if err := lf.read(buf, int64(p.Offset)); err != nil {
 		return e, err
 	}
-	var h header
-	h.Decode(buf)
-	n := uint32(headerBufSize)
-
-	e.Key = buf[n : n+h.klen]
-	n += h.klen
-	e.Meta = h.meta
-	e.UserMeta = h.userMeta
-	e.casCounter = h.casCounter
-	e.CASCounterCheck = h.casCounterCheck
-	e.Value = buf[n : n+h.vlen]
-	n += h.vlen
-
-	storedCRC := binary.BigEndian.Uint32(buf[n:])
-	calculatedCRC := crc32.Checksum(buf[:n], y.CastagnoliCrcTable)
-	if storedCRC != calculatedCRC {
-		return e, errors.New("CRC checksum mismatch")
-	}
+	//	var h header
+	//	h.Decode(buf)
+	//	n := uint32(headerBufSize)
+	//
+	//	e.Key = buf[n : n+h.klen]
+	//	n += h.klen
+	//	e.Meta = h.meta
+	//	e.UserMeta = h.userMeta
+	//	e.casCounter = h.casCounter
+	//	e.CASCounterCheck = h.casCounterCheck
+	//	e.Value = buf[n : n+h.vlen]
+	//	n += h.vlen
+	//
+	//	storedCRC := binary.BigEndian.Uint32(buf[n:])
+	//	calculatedCRC := crc32.Checksum(buf[:n], y.CastagnoliCrcTable)
+	//	if storedCRC != calculatedCRC {
+	//		return e, errors.New("CRC checksum mismatch")
+	//	}
 
 	return e, nil
 }
