@@ -791,35 +791,33 @@ func (vlog *valueLog) getFileRLocked(fid uint32) (*logFile, error) {
 }
 
 // Read reads the value log at a given location.
-func (vlog *valueLog) Read(p valuePointer, s *y.Slice) (e Entry, err error) {
-	lf, err := vlog.getFileRLocked(p.Fid)
+func (vlog *valueLog) Read(item *KVItem, consumer func([]byte)) error {
+	var vp valuePointer
+	vp.Decode(item.vptr)
+
+	lf, err := vlog.getFileRLocked(vp.Fid)
 	if err != nil {
-		return e, err
+		return errors.Wrapf(err, "Unable to read from value log: %+v", vp)
 	}
 	defer lf.fdLock.RUnlock()
 
-	if s == nil {
-		s = new(y.Slice)
-	}
 	var buf []byte
 
-	if buf, err = lf.read(p, s); err != nil {
-		return e, err
+	if buf, err = lf.read(vp, item.slice); err != nil {
+		return errors.Wrapf(err, "Unable to read from value log: %+v", vp)
 	}
 
 	var h header
 	h.Decode(buf)
+	if (h.meta & BitDelete) != 0 {
+		consumer(nil)
+		return nil
+	}
 	n := uint32(headerBufSize)
-
-	e.Key = buf[n : n+h.klen]
 	n += h.klen
-	e.Meta = h.meta
-	e.UserMeta = h.userMeta
-	e.casCounter = h.casCounter
-	e.CASCounterCheck = h.casCounterCheck
-	e.Value = buf[n : n+h.vlen]
+	consumer(buf[n : n+h.vlen])
 
-	return e, nil
+	return nil
 }
 
 func (vlog *valueLog) runGCInLoop(lc *y.LevelCloser) {

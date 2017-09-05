@@ -412,17 +412,10 @@ func (s *KV) fillItem(item *KVItem, consumer func([]byte)) error {
 		return nil
 	}
 
-	var vp valuePointer
-	vp.Decode(item.vptr)
-	entry, err := s.vlog.Read(vp, item.slice)
+	err := s.vlog.Read(item, consumer)
 	if err != nil {
-		return errors.Wrapf(err, "Unable to read from value log: %+v", vp)
+		return err
 	}
-	if (entry.Meta & BitDelete) != 0 { // Is a tombstone.
-		consumer(nil)
-		return nil
-	}
-	consumer(entry.Value)
 	return nil
 }
 
